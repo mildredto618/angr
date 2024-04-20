@@ -175,6 +175,7 @@ class VariableRecoveryStateBase:
             self.stack_region: MultiValuedMemory = MultiValuedMemory(
                 memory_id="mem",
                 top_func=self.top,
+                is_top_func=self.is_top,
                 phi_maker=self._make_phi_variable,
                 skip_missing_values_during_merging=True,
                 page_kwargs={"mo_cmp": self._mo_cmp},
@@ -188,6 +189,7 @@ class VariableRecoveryStateBase:
             self.register_region: MultiValuedMemory = MultiValuedMemory(
                 memory_id="reg",
                 top_func=self.top,
+                is_top_func=self.is_top,
                 phi_maker=self._make_phi_variable,
                 skip_missing_values_during_merging=True,
                 page_kwargs={"mo_cmp": self._mo_cmp},
@@ -201,6 +203,7 @@ class VariableRecoveryStateBase:
             self.global_region: MultiValuedMemory = MultiValuedMemory(
                 memory_id="mem",
                 top_func=self.top,
+                is_top_func=self.is_top,
                 phi_maker=self._make_phi_variable,
                 skip_missing_values_during_merging=True,
                 page_kwargs={"mo_cmp": self._mo_cmp},
@@ -215,7 +218,7 @@ class VariableRecoveryStateBase:
         self.type_constraints = defaultdict(set) if type_constraints is None else type_constraints
         self.func_typevar = func_typevar
         self.delayed_type_constraints = (
-            DefaultChainMapCOW(set, collapse_threshold=25)
+            DefaultChainMapCOW(default_factory=set, collapse_threshold=25)
             if delayed_type_constraints is None
             else delayed_type_constraints
         )

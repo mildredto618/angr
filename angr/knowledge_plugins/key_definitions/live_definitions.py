@@ -49,11 +49,12 @@ class DefinitionAnnotation(Annotation):
     An annotation that attaches a `Definition` to an AST.
     """
 
-    __slots__ = ("definition",)
+    __slots__ = ("definition", "_hash")
 
     def __init__(self, definition):
         super().__init__()
         self.definition = definition
+        self._hash = hash((DefinitionAnnotation, self.definition))
 
     @property
     def relocatable(self):
@@ -64,15 +65,11 @@ class DefinitionAnnotation(Annotation):
         return False
 
     def __hash__(self):
-        return hash((self.definition, self.relocatable, self.eliminatable))
+        return self._hash
 
     def __eq__(self, other: "object"):
-        if isinstance(other, DefinitionAnnotation):
-            return (
-                self.definition == other.definition
-                and self.relocatable == other.relocatable
-                and self.eliminatable == other.eliminatable
-            )
+        if type(other) is DefinitionAnnotation:
+            return self.definition == other.definition
         else:
             return False
 
@@ -129,6 +126,7 @@ class LiveDefinitions:
         memory_uses=None,
         tmp_uses=None,
         other_uses=None,
+        element_limit=5,
     ):
         self.project: Optional["Project"] = None
         self.arch = arch
@@ -139,9 +137,11 @@ class LiveDefinitions:
             MultiValuedMemory(
                 memory_id="reg",
                 top_func=self.top,
+                is_top_func=self.is_top,
                 skip_missing_values_during_merging=False,
                 page_kwargs={"mo_cmp": self._mo_cmp},
                 endness=self.arch.register_endness,
+                element_limit=element_limit,
             )
             if registers is None
             else registers
@@ -150,8 +150,10 @@ class LiveDefinitions:
             MultiValuedMemory(
                 memory_id="mem",
                 top_func=self.top,
+                is_top_func=self.is_top,
                 skip_missing_values_during_merging=False,
                 page_kwargs={"mo_cmp": self._mo_cmp},
+                element_limit=element_limit,
             )
             if stack is None
             else stack
@@ -160,8 +162,10 @@ class LiveDefinitions:
             MultiValuedMemory(
                 memory_id="mem",
                 top_func=self.top,
+                is_top_func=self.is_top,
                 skip_missing_values_during_merging=False,
                 page_kwargs={"mo_cmp": self._mo_cmp},
+                element_limit=element_limit,
             )
             if memory is None
             else memory
@@ -170,8 +174,10 @@ class LiveDefinitions:
             MultiValuedMemory(
                 memory_id="mem",
                 top_func=self.top,
+                is_top_func=self.is_top,
                 skip_missing_values_during_merging=False,
                 page_kwargs={"mo_cmp": self._mo_cmp},
+                element_limit=element_limit,
             )
             if heap is None
             else heap
@@ -463,6 +469,33 @@ class LiveDefinitions:
             merge_occurred |= state.other_uses.merge(other.other_uses)
 
         return state, merge_occurred
+
+    def compare(self, other: "LiveDefinitions") -> bool:
+        r0 = self.registers.compare(other.registers)
+        if r0 is False:
+            return False
+        r1 = self.heap.compare(other.heap)
+        if r1 is False:
+            return False
+        r2 = self.memory.compare(other.memory)
+        if r2 is False:
+            return False
+        r3 = self.stack.compare(other.stack)
+        if r3 is False:
+            return False
+
+        r4 = True
+        for k in other.others:
+            if k in self.others:
+                thing = self.others[k].merge(other.others[k])
+                if thing != self.others[k]:
+                    r4 = False
+                    break
+            else:
+                r4 = False
+                break
+
+        return r0 and r1 and r2 and r3 and r4
 
     def kill_definitions(self, atom: Atom) -> None:
         """

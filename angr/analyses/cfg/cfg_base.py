@@ -8,7 +8,7 @@ from sortedcontainers import SortedDict
 
 import pyvex
 from claripy.utils.orderedset import OrderedSet
-from cle import ELF, PE, Blob, TLSObject, MachO, ExternObject, KernelObject, FunctionHintSource, Hex, Coff, SRec
+from cle import ELF, PE, Blob, TLSObject, MachO, ExternObject, KernelObject, FunctionHintSource, Hex, Coff, SRec, XBE
 from cle.backends import NamedRegion
 import archinfo
 from archinfo.arch_soot import SootAddressDescriptor
@@ -778,6 +778,17 @@ class CFGBase(Analysis):
                         tpl = (section.min_addr, section.max_addr + 1)
                         memory_regions.append(tpl)
 
+            elif isinstance(b, XBE):
+                # some XBE files will mark the data sections as executable
+                for section in b.sections:
+                    if (
+                        section.is_executable
+                        and not section.is_writable
+                        and section.name not in {".data", ".rdata", ".rodata"}
+                    ):
+                        tpl = (section.min_addr, section.max_addr + 1)
+                        memory_regions.append(tpl)
+
             elif isinstance(b, MachO):
                 if b.segments:
                     # Get all executable segments
@@ -797,9 +808,11 @@ class CFGBase(Analysis):
                 # a blob is entirely executable
                 tpl = (b.min_addr, b.max_addr + 1)
                 memory_regions.append(tpl)
+
             elif isinstance(b, NamedRegion):
                 # NamedRegions have no content! Ignore
                 pass
+
             elif isinstance(b, self._cle_pseudo_objects):
                 pass
 

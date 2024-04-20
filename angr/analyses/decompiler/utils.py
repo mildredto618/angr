@@ -9,6 +9,7 @@ import ailment
 
 import angr
 from .call_counter import AILBlockCallCounter
+from .seq_to_blocks import SequenceToBlocks
 
 _l = logging.getLogger(__name__)
 
@@ -568,7 +569,10 @@ def peephole_optimize_stmts(block, stmt_opts):
     statements = []
 
     # run statement optimizers
-    for stmt_idx, stmt in enumerate(block.statements):
+    # note that an optimizer may optionally edit or remove statements whose statement IDs are greater than stmt_idx
+    stmt_idx = 0
+    while stmt_idx < len(block.statements):
+        stmt = block.statements[stmt_idx]
         old_stmt = stmt
         redo = True
         while redo:
@@ -586,6 +590,7 @@ def peephole_optimize_stmts(block, stmt_opts):
             any_update = True
         else:
             statements.append(old_stmt)
+        stmt_idx += 1
 
     return statements, any_update
 
@@ -655,13 +660,16 @@ def decompile_functions(path, functions=None, structurer=None, catch_errors=Fals
 
     # collect all functions when None are provided
     if functions is None:
-        functions = cfg.functions.values()
+        functions = list(sorted(cfg.kb.functions))
 
     # normalize the functions that could be ints as names
-    normalized_functions = []
+    normalized_functions: List[Union[int, str]] = []
     for func in functions:
         try:
-            normalized_name = int(func, 0)
+            if isinstance(func, str):
+                normalized_name = int(func, 0)
+            else:
+                normalized_name = func
         except ValueError:
             normalized_name = func
         normalized_functions.append(normalized_name)
@@ -683,7 +691,7 @@ def decompile_functions(path, functions=None, structurer=None, catch_errors=Fals
     ]
     for func in functions:
         f = cfg.functions[func]
-        if f is None or f.is_plt:
+        if f is None or f.is_plt or f.is_syscall or f.is_alignment or f.is_simprocedure:
             continue
 
         exception_string = ""
@@ -700,14 +708,14 @@ def decompile_functions(path, functions=None, structurer=None, catch_errors=Fals
         # do sanity checks on decompilation, skip checks if we already errored
         if not exception_string:
             if dec is None or not dec.codegen or not dec.codegen.text:
-                exception_string = "Decompilation had no code output (failed in Dec)"
+                exception_string = "Decompilation had no code output (failed in decompilation)"
             elif "{\n}" in dec.codegen.text:
                 exception_string = "Decompilation outputted an empty function (failed in structuring)"
             elif structurer in ["dream", "combing"] and "goto" in dec.codegen.text:
                 exception_string = "Decompilation outputted a goto for a Gotoless algorithm (failed in structuring)"
 
         if exception_string:
-            _l.critical("Failed to decompile %s because %s", str(func), exception_string)
+            _l.critical("Failed to decompile %s because %s", repr(f), exception_string)
             decompilation += f"// [error: {func} | {exception_string}]\n"
         else:
             decompilation += dec.codegen.text + "\n"
@@ -732,6 +740,37 @@ def find_block_by_addr(graph: networkx.DiGraph, addr: int):
             return block
 
     raise KeyError("The block is not in the graph!")
+
+
+def sequence_to_blocks(seq: "BaseNode") -> List[ailment.Block]:
+    """
+    Converts a sequence node (BaseNode) to a list of ailment blocks contained in it and all its children.
+    """
+    walker = SequenceToBlocks()
+    walker.walk(seq)
+    return walker.blocks
+
+
+def sequence_to_statements(
+    seq: "BaseNode", exclude=(ailment.statement.Jump, ailment.statement.Jump)
+) -> List[ailment.statement.Statement]:
+    """
+    Converts a sequence node (BaseNode) to a list of ailment Statements contained in it and all its children.
+    May exclude certain types of statements.
+    """
+    statements = []
+    blocks = sequence_to_blocks(seq)
+    block: ailment.Block
+    for block in blocks:
+        if not block.statements:
+            continue
+
+        for stmt in block.statements:
+            if isinstance(stmt, exclude):
+                continue
+            statements.append(stmt)
+
+    return statements
 
 
 # delayed import

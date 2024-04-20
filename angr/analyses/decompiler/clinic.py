@@ -33,8 +33,15 @@ from ...procedures.stubs.UnresolvableJumpTarget import UnresolvableJumpTarget
 from .. import Analysis, register_analysis
 from ..cfg.cfg_base import CFGBase
 from ..reaching_definitions import ReachingDefinitionsAnalysis
+from .return_maker import ReturnMaker
 from .ailgraph_walker import AILGraphWalker, RemoveNodeNotice
-from .optimization_passes import get_default_optimization_passes, OptimizationPassStage, RegisterSaveAreaSimplifier
+from .optimization_passes import (
+    get_default_optimization_passes,
+    OptimizationPassStage,
+    RegisterSaveAreaSimplifier,
+    DUPLICATING_OPTS,
+    CONDENSING_OPTS,
+)
 
 if TYPE_CHECKING:
     from angr.knowledge_plugins.cfg import CFGModel
@@ -102,6 +109,7 @@ class Clinic(Analysis):
 
         self.graph = None
         self.cc_graph: Optional[networkx.DiGraph] = None
+        self.unoptimized_graph: Optional[networkx.DiGraph] = None
         self.arg_list = None
         self.variable_kb = variable_kb
         self.externs: Set[SimMemoryVariable] = set()
@@ -443,7 +451,8 @@ class Clinic(Analysis):
         self.externs = None
         self.data_refs: Dict[int, List[DataRefDesc]] = self._collect_data_refs(ail_graph)
 
-    def copy_graph(self) -> networkx.DiGraph:
+    @staticmethod
+    def _copy_graph(graph: networkx.DiGraph) -> networkx.DiGraph:
         """
         Copy AIL Graph.
 
@@ -452,7 +461,7 @@ class Clinic(Analysis):
         graph_copy = networkx.DiGraph()
         block_mapping = {}
         # copy all blocks
-        for block in self.graph.nodes():
+        for block in graph.nodes():
             new_block = copy.copy(block)
             new_stmts = copy.copy(block.statements)
             new_block.statements = new_stmts
@@ -460,11 +469,14 @@ class Clinic(Analysis):
             graph_copy.add_node(new_block)
 
         # copy all edges
-        for src, dst, data in self.graph.edges(data=True):
+        for src, dst, data in graph.edges(data=True):
             new_src = block_mapping[src]
             new_dst = block_mapping[dst]
             graph_copy.add_edge(new_src, new_dst, **data)
         return graph_copy
+
+    def copy_graph(self) -> networkx.DiGraph:
+        return self._copy_graph(self.graph)
 
     @timethis
     def _set_function_graph(self):
@@ -926,6 +938,11 @@ class Clinic(Analysis):
             if pass_.STAGE != stage:
                 continue
 
+            if pass_ in DUPLICATING_OPTS + CONDENSING_OPTS and self.unoptimized_graph is None:
+                # we should save a copy at the first time any optimization that could alter the structure
+                # of the graph is applied
+                self.unoptimized_graph = self._copy_graph(ail_graph)
+
             a = pass_(
                 self.function,
                 blocks_by_addr=addr_to_blocks,
@@ -1038,46 +1055,7 @@ class Clinic(Analysis):
             # unknown calling convention. cannot do much about return expressions.
             return ail_graph
 
-        # Block walker
-
-        def _handle_Return(
-            stmt_idx: int, stmt: ailment.Stmt.Return, block: Optional[ailment.Block]
-        ):  # pylint:disable=unused-argument
-            if (
-                block is not None
-                and not stmt.ret_exprs
-                and self.function.prototype is not None
-                and self.function.prototype.returnty is not None
-                and type(self.function.prototype.returnty) is not SimTypeBottom
-            ):
-                new_stmt = stmt.copy()
-                ret_val = self.function.calling_convention.return_val(self.function.prototype.returnty)
-                if isinstance(ret_val, SimRegArg):
-                    reg = self.project.arch.registers[ret_val.reg_name]
-                    new_stmt.ret_exprs.append(
-                        ailment.Expr.Register(
-                            self._next_atom(),
-                            None,
-                            reg[0],
-                            ret_val.size * self.project.arch.byte_width,
-                            reg_name=self.project.arch.translate_register_name(reg[0], ret_val.size),
-                        )
-                    )
-                else:
-                    l.warning("Unsupported type of return expression %s.", type(ret_val))
-                block.statements[stmt_idx] = new_stmt
-
-        def _handler(block):
-            walker = ailment.AILBlockWalker()
-            # we don't need to handle any statement besides Returns
-            walker.stmt_handlers.clear()
-            walker.expr_handlers.clear()
-            walker.stmt_handlers[ailment.Stmt.Return] = _handle_Return
-            walker.walk(block)
-
-        # Graph walker
-
-        AILGraphWalker(ail_graph, _handler, replace_nodes=True).walk()
+        ReturnMaker(self._ail_manager, self.project.arch, self.function, ail_graph)
 
         return ail_graph
 

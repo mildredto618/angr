@@ -1,3 +1,4 @@
+# pylint:disable=too-many-boolean-expressions
 from typing import Set, Dict, List, Tuple, Any, Optional, TYPE_CHECKING
 from collections import defaultdict
 import logging
@@ -183,6 +184,7 @@ class AILSimplifier(Analysis):
             observe_all=False,
             use_callee_saved_regs_at_return=self._use_callee_saved_regs_at_return,
             track_tmps=True,
+            element_limit=1,
         ).model
         self._reaching_definitions = rd
         return rd
@@ -504,7 +506,9 @@ class AILSimplifier(Analysis):
 
         first_op = walker.operations[0]
         if isinstance(first_op, Convert):
-            return first_op.to_bits // self.project.arch.byte_width, ("convert", (first_op,))
+            if first_op.to_bits >= self.project.arch.byte_width:
+                # we need at least one byte!
+                return first_op.to_bits // self.project.arch.byte_width, ("convert", (first_op,))
         if isinstance(first_op, BinaryOp):
             second_op = None
             if len(walker.operations) >= 2:
@@ -526,6 +530,7 @@ class AILSimplifier(Analysis):
                 and first_op.op not in {"Shr", "Sar"}
                 and isinstance(second_op, Convert)
                 and second_op.from_bits == expr.bits
+                and second_op.to_bits >= self.project.arch.byte_width  # we need at least one byte!
             ):
                 return min(expr.bits, second_op.to_bits) // self.project.arch.byte_width, (
                     "binop-convert",
@@ -721,13 +726,13 @@ class AILSimplifier(Analysis):
                             ):
                                 continue
 
-                            # Make sure the register is never updated across this function
-                            if any(
-                                (def_ != the_def and def_.atom == the_def.atom)
-                                for def_ in rd.all_definitions
-                                if isinstance(def_.atom, atoms.Register) and rd.all_uses.get_uses(def_)
-                            ):
-                                continue
+                        # Make sure the register is never updated across this function
+                        if any(
+                            (def_ != the_def and def_.atom == the_def.atom)
+                            for def_ in rd.all_definitions
+                            if isinstance(def_.atom, atoms.Register) and rd.all_uses.get_uses(def_)
+                        ):
+                            continue
 
                         # find all its uses
                         all_arg_copy_var_uses: Set[Tuple[CodeLocation, Any]] = set(
@@ -1214,6 +1219,13 @@ class AILSimplifier(Analysis):
                         continue
 
             uses = rd.all_uses.get_uses(def_)
+            if (
+                isinstance(def_.atom, atoms.Register)
+                and def_.atom.reg_offset in self.project.arch.artificial_registers_offsets
+            ):
+                if len(uses) == 1 and next(iter(uses)) == def_.codeloc:
+                    # cc_ndep = amd64g_calculate_condition(..., cc_ndep)
+                    uses = set()
 
             if not uses:
                 if not isinstance(def_.codeloc, ExternalCodeLocation):
